@@ -52,7 +52,7 @@ export default function FindView({ active, lib, onChoose }: Props) {
       setUrlLoading(true)
       setUrlPreview(null)
       fetchVideoInfo(vid)
-        .then(info => setUrlPreview(info))
+        .then((info: VideoInfo) => setUrlPreview(info))
         .catch(() => setErr('Could not fetch video info'))
         .finally(() => setUrlLoading(false))
       return
@@ -102,8 +102,8 @@ export default function FindView({ active, lib, onChoose }: Props) {
         setHasMore(false)
       } else {
         // Deduplicate against existing results
-        const existingIds = new Set(results.map(r => r.video_id))
-        const filtered = more.filter(m => !existingIds.has(m.video_id))
+        const existingIds = new Set(results.map((r: VideoInfo) => r.video_id))
+        const filtered = more.filter((m: VideoInfo) => !existingIds.has(m.video_id))
         if (filtered.length === 0) {
           setHasMore(false)
         } else {

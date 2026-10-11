@@ -413,7 +413,7 @@ export default function App() {
   // ── Open Notes After Build ────────────────────────────────
   async function openAfterBuild(vid: string) {
     await loadLib()
-    const v = lib.find(x => x.video_id === vid)
+    const v = lib.find((x: LibraryVideo) => x.video_id === vid)
     if (v) {
       setCur(v)
       setScope(new Set([vid]))
@@ -421,7 +421,7 @@ export default function App() {
     } else {
       const freshLib = await fetchLibrary()
       setLib(freshLib)
-      const freshV = freshLib.find(x => x.video_id === vid)
+      const freshV = freshLib.find((x: LibraryVideo) => x.video_id === vid)
       if (freshV) {
         setCur(freshV)
         setScope(new Set([vid]))
