@@ -52,8 +52,13 @@ def search(q: str, n: int = 12, offset: int = 0):
 
 @app.get("/api/transcripts/{video_id}")
 def transcripts(video_id: str):
-    try: return {"languages": yt.list_transcripts(video_id)}
-    except Exception as e: raise HTTPException(404, f"No transcripts available: {e}")
+    try:
+        return {"languages": yt.list_transcripts(video_id)}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Transcript fetch failed for {video_id}: {type(e).__name__}: {e}")
+        status_code = 429 if any(k in str(e) for k in ["429", "TooManyRequests", "IpBound", "blocked"]) else 404
+        raise HTTPException(status_code, f"No transcripts available: {e}")
 
 
 class IngestReq(BaseModel):
