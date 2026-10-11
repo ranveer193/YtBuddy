@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  notelens:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notelens
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - DATA_DIR=/app/data
+    volumes:
+      - notelens-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  notelens-data:

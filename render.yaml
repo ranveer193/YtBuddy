@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: notelens-backend
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_API_KEYS
+        sync: false
+      - key: HUGGINGFACEHUB_API_TOKEN
+        sync: false
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: FRONTEND_ORIGIN
+        value: "*"
+      - key: DATA_DIR
+        value: data
