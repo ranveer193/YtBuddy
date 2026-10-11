@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 try:
     from langchain_classic.retrievers.document_compressors import EmbeddingsFilter, LLMChainExtractor
 except ImportError:  # older LangChain
-    from langchain.retrievers.document_compressors import EmbeddingsFilter, LLMChainExtractor
+    from langchain_classic.retrievers.document_compressors import EmbeddingsFilter, LLMChainExtractor
 from .. import vectorstore as V
 from ..config import settings as cfg
 from ..events import fmt_ts, step, tok
