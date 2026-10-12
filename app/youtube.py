@@ -209,6 +209,78 @@ def search(query: str, n: int = 12, offset: int = 0) -> list[dict]:
     return entries[offset : offset + n]
 
 
+def _fetch_oembed_info(vid: str) -> dict:
+    """Fallback metadata extractor using YouTube official oEmbed API and page scraping."""
+    info = {
+        "video_id": vid,
+        "title": "YouTube Video",
+        "channel": "YouTube Creator",
+        "duration": 0,
+        "thumbnail": _thumb(vid),
+        "views": None,
+        "url": f"https://www.youtube.com/watch?v={vid}",
+        "chapters": []
+    }
+    # 1. Try YouTube oEmbed endpoint (reliable, public, no IP blocks)
+    try:
+        r = requests.get(
+            f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={vid}&format=json",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8
+        )
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("title"): info["title"] = d["title"]
+            if d.get("author_name"): info["channel"] = d["author_name"]
+            if d.get("thumbnail_url"): info["thumbnail"] = d["thumbnail_url"]
+    except Exception as e:
+        logger.warning(f"oEmbed fetch failed for {vid}: {e}")
+
+    # 2. Try scraping playerResponse or transcriptapi duration
+    try:
+        r_page = requests.get(
+            f"https://www.youtube.com/watch?v={vid}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            timeout=8
+        )
+        if r_page.status_code == 200:
+            m = re.search(r'var ytInitialPlayerResponse\s*=\s*({.+?});(?:var|</script>)', r_page.text)
+            if m:
+                import json
+                pdata = json.loads(m.group(1))
+                vdetails = pdata.get("videoDetails", {})
+                if vdetails.get("title") and info["title"] == "YouTube Video":
+                    info["title"] = vdetails["title"]
+                if vdetails.get("author") and info["channel"] == "YouTube Creator":
+                    info["channel"] = vdetails["author"]
+                if vdetails.get("lengthSeconds"):
+                    info["duration"] = int(vdetails["lengthSeconds"])
+                if vdetails.get("viewCount"):
+                    info["views"] = int(vdetails["viewCount"])
+    except Exception as e:
+        logger.warning(f"PlayerResponse scrape failed for {vid}: {e}")
+
+    # 3. If duration is still 0, check transcriptapi.com length_seconds
+    if not info.get("duration"):
+        key = _transcriptapi_key()
+        if key:
+            try:
+                rt = requests.get(
+                    _TRANSCRIPTAPI_BASE,
+                    params={"video_url": vid, "format": "json"},
+                    headers={"Authorization": f"Bearer {key}"},
+                    timeout=8
+                )
+                if rt.status_code == 200:
+                    dt = rt.json()
+                    if dt.get("length_seconds"):
+                        info["duration"] = int(dt["length_seconds"])
+            except Exception:
+                pass
+
+    return info
+
+
 def video_info(vid: str) -> dict:
     now = time.time()
     if vid in _VINFO_CACHE:
@@ -216,19 +288,25 @@ def video_info(vid: str) -> dict:
         if now - ts < _CACHE_TTL:
             return cached
 
-    with _ydl() as y:
-        e = y.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-    info = {
-        "video_id": vid,
-        "title": e.get("title"),
-        "channel": e.get("channel") or e.get("uploader"),
-        "duration": e.get("duration"),
-        "thumbnail": e.get("thumbnail") or _thumb(vid),
-        "views": e.get("view_count"),
-        "url": f"https://www.youtube.com/watch?v={vid}",
-        "chapters": [{"start_time": c["start_time"], "title": c.get("title") or ""}
-                     for c in (e.get("chapters") or []) if c.get("start_time") is not None]
-    }
+    # Try yt-dlp first
+    try:
+        with _ydl() as y:
+            e = y.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+        info = {
+            "video_id": vid,
+            "title": e.get("title") or "YouTube Video",
+            "channel": e.get("channel") or e.get("uploader") or "YouTube Creator",
+            "duration": e.get("duration") or 0,
+            "thumbnail": e.get("thumbnail") or _thumb(vid),
+            "views": e.get("view_count"),
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "chapters": [{"start_time": c["start_time"], "title": c.get("title") or ""}
+                         for c in (e.get("chapters") or []) if c.get("start_time") is not None]
+        }
+    except Exception as ex:
+        logger.warning(f"yt-dlp extract_info failed for {vid} ({ex}). Falling back to oEmbed/scrape...")
+        info = _fetch_oembed_info(vid)
+
     _VINFO_CACHE[vid] = (now, info)
     return info
 
