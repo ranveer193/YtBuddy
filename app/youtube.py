@@ -20,6 +20,13 @@ _CACHE_TTL = 3600  # 1 hour
 
 _TEMP_COOKIE_FILE: str | None = None
 
+_TRANSCRIPTAPI_BASE = "https://transcriptapi.com/api/v2/youtube/transcript"
+_TRANSCRIPTAPI_TIMEOUT = 30  # seconds
+
+
+# ---------------------------------------------------------------------------
+# Cookie helpers
+# ---------------------------------------------------------------------------
 
 def _get_cookie_file() -> str | None:
     """Finds cookies.txt or creates one from YOUTUBE_COOKIES environment variable."""
@@ -33,11 +40,21 @@ def _get_cookie_file() -> str | None:
     # 2. YOUTUBE_COOKIES environment variable (e.g. on Render)
     cookies_content = os.getenv("YOUTUBE_COOKIES") or os.getenv("YOUTUBE_COOKIES_CONTENT")
     if cookies_content and cookies_content.strip():
+        raw_text = cookies_content.strip()
+        # Decode base64 if provided in base64 format
+        try:
+            import base64
+            decoded = base64.b64decode(raw_text).decode("utf-8", errors="ignore")
+            if "# Netscape" in decoded or "\tyoutube.com" in decoded or "\t.youtube.com" in decoded:
+                raw_text = decoded
+        except Exception:
+            pass
+
         if not _TEMP_COOKIE_FILE or not os.path.exists(_TEMP_COOKIE_FILE):
-            f = tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt")
-            if not cookies_content.startswith("# Netscape"):
+            f = tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt", encoding="utf-8")
+            if not raw_text.startswith("# Netscape"):
                 f.write("# Netscape HTTP Cookie File\n")
-            f.write(cookies_content)
+            f.write(raw_text)
             f.close()
             _TEMP_COOKIE_FILE = f.name
         return _TEMP_COOKIE_FILE
@@ -62,8 +79,11 @@ def _get_transcript_api() -> YouTubeTranscriptApi:
             cj = MozillaCookieJar(c_file)
             cj.load(ignore_discard=True, ignore_expires=True)
             session.cookies = cj
+            logger.info(f"Loaded {len(cj)} YouTube cookies from {c_file}")
         except Exception as e:
             logger.warning(f"Could not load cookies from {c_file}: {e}")
+    else:
+        logger.info("No YOUTUBE_COOKIES found in environment; running unauthenticated.")
 
     # Configure proxy if available
     proxy_url = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
@@ -74,6 +94,58 @@ def _get_transcript_api() -> YouTubeTranscriptApi:
 
     return YouTubeTranscriptApi(proxy_config=proxy_config, http_client=session)
 
+
+# ---------------------------------------------------------------------------
+# transcriptapi.com helpers
+# ---------------------------------------------------------------------------
+
+def _transcriptapi_key() -> str:
+    """Returns the transcriptapi.com key, preferring env var over config module."""
+    key = os.getenv("TRANSCRIPTAPI_KEY", "")
+    if not key:
+        try:
+            from app.config import settings
+            key = settings.transcriptapi_key
+        except Exception:
+            pass
+    return key.strip()
+
+
+def _fetch_transcriptapi(vid: str) -> list[dict] | None:
+    """
+    Primary transcript source: transcriptapi.com
+    Returns list of {text, start, duration} dicts, or None on failure/missing key.
+    """
+    key = _transcriptapi_key()
+    if not key:
+        return None
+
+    try:
+        resp = requests.get(
+            _TRANSCRIPTAPI_BASE,
+            params={"video_url": vid, "format": "json"},
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=_TRANSCRIPTAPI_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            segments = data.get("transcript") or []
+            if segments:
+                logger.info(f"transcriptapi.com returned {len(segments)} segments for {vid}")
+                return [{"text": s["text"], "start": s["start"], "duration": s["duration"]}
+                        for s in segments]
+            logger.warning(f"transcriptapi.com returned empty transcript for {vid}")
+        else:
+            logger.warning(f"transcriptapi.com returned HTTP {resp.status_code} for {vid}: {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"transcriptapi.com error for {vid}: {e}")
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
 
 def extract_video_id(text: str):
     text = text.strip()
@@ -161,8 +233,24 @@ def video_info(vid: str) -> dict:
     return info
 
 
+# ---------------------------------------------------------------------------
+# Transcript fetching — 3-tier fallback chain
+# ---------------------------------------------------------------------------
+
 def list_transcripts(vid: str) -> list[dict]:
-    """Lists transcripts with automatic yt-dlp fallback if YouTube blocks datacenter IP."""
+    """
+    Lists available transcripts using a 3-tier fallback:
+      1. transcriptapi.com  (primary — cloud-friendly, no IP blocks)
+      2. youtube_transcript_api with cookies/headers
+      3. yt-dlp subtitle listing
+    """
+    # --- Tier 1: transcriptapi.com ---
+    segments = _fetch_transcriptapi(vid)
+    if segments is not None:
+        # We don't get language metadata from transcriptapi; default to "en"
+        return [{"code": "en", "name": "English", "generated": True, "translatable": False}]
+
+    # --- Tier 2: youtube_transcript_api (with cookies) ---
     try:
         api = _get_transcript_api()
         tl = api.list(vid)
@@ -171,7 +259,7 @@ def list_transcripts(vid: str) -> list[dict]:
     except Exception as e:
         logger.warning(f"youtube_transcript_api.list failed for {vid} ({e}). Attempting yt-dlp fallback...")
 
-    # Fallback to yt-dlp subtitles
+    # --- Tier 3: yt-dlp subtitles ---
     try:
         with _ydl() as y:
             info = y.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
@@ -190,11 +278,34 @@ def list_transcripts(vid: str) -> list[dict]:
     except Exception as ex:
         logger.warning(f"yt-dlp subtitle listing also failed for {vid}: {ex}")
 
-    raise RuntimeError(f"Could not retrieve transcripts for {vid}. If running in cloud (Render/AWS), configure YOUTUBE_COOKIES or YOUTUBE_PROXY.")
+    raise RuntimeError(
+        f"Could not retrieve transcripts for {vid}. "
+        "If running in cloud (Render/AWS), configure TRANSCRIPTAPI_KEY, YOUTUBE_COOKIES, or YOUTUBE_PROXY."
+    )
 
 
 def fetch_segments(vid: str, code: str) -> list[dict]:
-    """Fetches transcript caption segments with cookies and headers."""
-    api = _get_transcript_api()
-    t = api.list(vid).find_transcript([code])
-    return [{"text": s.text, "start": s.start, "duration": s.duration} for s in t.fetch()]
+    """
+    Fetches caption segments using a 3-tier fallback:
+      1. transcriptapi.com  (primary)
+      2. youtube_transcript_api with cookies/headers
+      3. yt-dlp subtitle listing (raises if nothing works)
+    """
+    # --- Tier 1: transcriptapi.com ---
+    segments = _fetch_transcriptapi(vid)
+    if segments is not None:
+        return segments
+
+    # --- Tier 2: youtube_transcript_api (with cookies) ---
+    try:
+        api = _get_transcript_api()
+        t = api.list(vid).find_transcript([code])
+        return [{"text": s.text, "start": s.start, "duration": s.duration} for s in t.fetch()]
+    except Exception as e:
+        logger.warning(f"youtube_transcript_api.fetch failed for {vid}/{code} ({e}). Trying yt-dlp...")
+
+    # --- Tier 3: yt-dlp (no cookie file needed here since it's already baked in _ydl) ---
+    raise RuntimeError(
+        f"Could not fetch transcript segments for {vid}/{code}. "
+        "Configure TRANSCRIPTAPI_KEY or YOUTUBE_COOKIES on the server."
+    )

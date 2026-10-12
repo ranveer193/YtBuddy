@@ -13,6 +13,7 @@ class Settings:
     groq_api_key = os.getenv("GROQ_API_KEY", "")
     _keys_raw = os.getenv("GROQ_API_KEYS", "")
     groq_api_keys = [k.strip() for k in ([os.getenv("GROQ_API_KEY", "")] + _keys_raw.split(",")) if k.strip()]
+    transcriptapi_key = os.getenv("TRANSCRIPTAPI_KEY", "")
     hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
     hf_llm_repo = os.getenv("HF_LLM_REPO", "openai/gpt-oss-120b")
     frontend_origins = [o.strip() for o in os.getenv("FRONTEND_ORIGIN", "*").split(",") if o.strip()]
