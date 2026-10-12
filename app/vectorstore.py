@@ -5,9 +5,40 @@ from .config import settings as cfg
 from .events import fmt_ts
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 @lru_cache
 def get_embeddings():
+    # 1. Try Hugging Face Endpoint API if token provided
+    if cfg.hf_token:
+        try:
+            from langchain_huggingface import HuggingFaceEndpointEmbeddings
+            emb = HuggingFaceEndpointEmbeddings(
+                model=cfg.embed_model,
+                huggingfacehub_api_token=cfg.hf_token,
+            )
+            # Quick check if it is active
+            emb.embed_query("test")
+            logger.info("Using HuggingFaceEndpointEmbeddings for vectorstore")
+            return emb
+        except Exception as e:
+            logger.warning(f"HuggingFaceEndpointEmbeddings unavailable ({e}). Falling back...")
+
+    # 2. Try FastEmbed (lightweight ONNX runtime, 4x faster on CPU, very low RAM)
+    try:
+        from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+        emb = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        logger.info("Using FastEmbed (ONNX) for vectorstore")
+        return emb
+    except Exception as e:
+        logger.warning(f"FastEmbed unavailable ({e}). Falling back to local HuggingFace...")
+
+    # 3. Fallback to local HuggingFace sentence-transformers
     from langchain_huggingface import HuggingFaceEmbeddings
+    logger.info("Using local HuggingFaceEmbeddings (PyTorch)")
     return HuggingFaceEmbeddings(model_name=cfg.embed_model, encode_kwargs={"normalize_embeddings": True})
 
 
