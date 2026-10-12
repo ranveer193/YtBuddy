@@ -30,21 +30,8 @@ def _create_groq_llm(key: str | None = None, temperature: float = 0.2):
     return ChatGroq(**kwargs)
 
 
-def _create_hf_llm(temperature: float = 0.2):
-    from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
-    kwargs = {
-        "repo_id": s.hf_llm_repo,
-        "task": "text-generation",
-        "temperature": max(temperature, 0.01),
-        "max_new_tokens": 2048,
-    }
-    if s.hf_token:
-        kwargs["huggingfacehub_api_token"] = s.hf_token
-    return ChatHuggingFace(llm=HuggingFaceEndpoint(**kwargs))
-
-
 def get_candidate_llms(temperature: float = 0.2):
-    """Returns candidate LLM instances in failover priority order."""
+    """Returns candidate Groq LLM instances in key rotation order."""
     groq_keys = list(dict.fromkeys(s.groq_api_keys or ([s.groq_api_key] if s.groq_api_key else [""])))
     groq_candidates = []
     for k in groq_keys:
@@ -53,24 +40,9 @@ def get_candidate_llms(temperature: float = 0.2):
         except Exception as e:
             logger.warning(f"Could not initialize Groq LLM: {e}")
 
-    hf_candidate = None
-    if s.hf_token or s.llm_provider == "hf":
-        try:
-            hf_candidate = ("hf", _create_hf_llm(temperature=temperature))
-        except Exception as e:
-            logger.warning(f"Could not initialize HF LLM: {e}")
-
-    candidates = []
-    if s.llm_provider == "hf":
-        if hf_candidate: candidates.append(hf_candidate)
-        candidates.extend(groq_candidates)
-    else:
-        candidates.extend(groq_candidates)
-        if hf_candidate: candidates.append(hf_candidate)
-
-    if not candidates:
-        candidates.append(("groq", _create_groq_llm(temperature=temperature)))
-    return candidates
+    if not groq_candidates:
+        groq_candidates.append(("groq", _create_groq_llm(temperature=temperature)))
+    return groq_candidates
 
 
 def get_llm(temperature: float = 0.2):

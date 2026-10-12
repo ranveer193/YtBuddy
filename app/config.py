@@ -34,7 +34,7 @@ class Settings:
     # chat
     memory_limit = int(os.getenv("MEMORY_TOKEN_LIMIT", 1500))
     memory_keep = int(os.getenv("MEMORY_KEEP_LAST", 4))
-    llm_compression = _b("LLM_COMPRESSION", True)
+    llm_compression = _b("LLM_COMPRESSION", False)
     n_queries = int(os.getenv("MULTI_QUERY_COUNT", 3))
     per_query_k = int(os.getenv("PER_QUERY_K", 8))
 

@@ -62,32 +62,36 @@ def n_retrieve(s: S):
 
 
 def n_compress(s: S):
-    """Contextual compression: embedding relevance filter, then LLM extraction of the relevant sentences."""
-    w = get_stream_writer(); step(w, "compress", "Contextual compression", "running")
+    """Contextual compression: Fast vector relevance re-ranking in milliseconds."""
+    w = get_stream_writer()
     docs = [Document(page_content=d["text"], metadata=d["meta"]) for d in s["docs"]]
     if not docs:
-        step(w, "compress", "Contextual compression", "done", "nothing retrieved"); return {"docs": []}
+        step(w, "compress", "Contextual compression", "done", "nothing retrieved")
+        return {"docs": []}
+
     locate = s["intent"] == "locate"
-    use_llm = cfg.llm_compression and not locate
-    
-    # 1. Embedding relevance filter with fallback to raw retrieved docs
+    target_k = 8 if locate else 4
+
+    step(w, "compress", "Contextual compression", "running")
+
+    # FastEmbed vector relevance re-ranking (<15ms)
     try:
-        top = EmbeddingsFilter(embeddings=V.get_embeddings(), k=(8 if locate else 4 if use_llm else 6)) \
+        top = EmbeddingsFilter(embeddings=V.get_embeddings(), k=target_k) \
             .compress_documents(docs, s["standalone"])
         if not top:
-            top = docs[: (8 if locate else 4)]
+            top = docs[:target_k]
     except Exception:
-        top = docs[: (8 if locate else 4)]
+        top = docs[:target_k]
 
     out = top
-    # 2. LLM extraction filter with safe fallback
-    if use_llm and top:
+    # Optional LLM extractor (only if explicitly enabled via LLM_COMPRESSION=1)
+    if cfg.llm_compression and not locate and top:
         try:
             ext = LLMChainExtractor.from_llm(get_llm(0)).compress_documents(top, s["standalone"])
             out = ext or top
         except Exception:
             out = top
-            
+
     out = sorted(out, key=lambda d: (d.metadata.get("video_id", ""), d.metadata.get("start_sec", 0)))
     step(w, "compress", "Contextual compression", "done", f"{len(docs)} → {len(out)} passages")
     return {"docs": [{"text": d.page_content, "meta": d.metadata} for d in out]}
