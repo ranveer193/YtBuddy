@@ -1,9 +1,12 @@
-import json
 import queue
 import threading
+import time
 from typing import Dict, List, Optional
 from .graphs.ingest import ingest_graph
 from . import youtube as yt
+
+# Completed/errored jobs are evicted after this many seconds (5 minutes)
+_JOB_TTL = 300
 
 
 class IngestJob:
@@ -19,7 +22,9 @@ class IngestJob:
         self.thumbnail = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
         self.current_step = "Starting ingest pipeline…"
         self.pct: Optional[int] = None
+        # Only keep last 200 events — prevents unbounded growth per job
         self.events: List[dict] = []
+        self._finished_at: Optional[float] = None
         self._listeners: List[queue.Queue] = []
         self._lock = threading.Lock()
 
@@ -43,7 +48,11 @@ class IngestJob:
         with self._lock:
             if self.cancelled:
                 return
+            # Cap event list to last 200 to avoid RAM growth on long jobs
             self.events.append(ev)
+            if len(self.events) > 200:
+                self.events = self.events[-200:]
+
             if ev.get("type") == "step":
                 label = ev.get("label", "")
                 detail = ev.get("detail", "")
@@ -71,6 +80,7 @@ class IngestJob:
             self.status = "error" if not self.cancelled else "cancelled"
             self.error = err_msg
             self.current_step = f"Failed: {err_msg}"
+            self._finished_at = time.time()
             err_ev = {"type": "error", "message": err_msg}
             self.events.append(err_ev)
             for q in list(self._listeners):
@@ -86,6 +96,7 @@ class IngestJob:
             if not self.cancelled:
                 self.status = "done"
                 self.pct = 100
+            self._finished_at = time.time()
             for q in list(self._listeners):
                 try:
                     q.put(None)
@@ -98,6 +109,7 @@ class IngestJob:
             self.cancelled = True
             self.status = "cancelled"
             self.current_step = "Cancelled"
+            self._finished_at = time.time()
             cancel_ev = {"type": "error", "message": "Cancelled by user"}
             self.events.append(cancel_ev)
             for q in list(self._listeners):
@@ -107,6 +119,14 @@ class IngestJob:
                 except Exception:
                     pass
             self._listeners.clear()
+
+    def is_expired(self) -> bool:
+        """Completed/failed jobs older than _JOB_TTL seconds can be evicted."""
+        return (
+            self.status in ("done", "error", "cancelled")
+            and self._finished_at is not None
+            and (time.time() - self._finished_at) > _JOB_TTL
+        )
 
     def to_dict(self) -> dict:
         with self._lock:
@@ -130,12 +150,19 @@ class JobManager:
         self.jobs: Dict[str, IngestJob] = {}
         self._lock = threading.Lock()
 
+    def _evict_expired(self):
+        """Remove completed jobs older than _JOB_TTL. Must be called under self._lock."""
+        expired = [vid for vid, j in self.jobs.items() if j.is_expired()]
+        for vid in expired:
+            del self.jobs[vid]
+
     def get_job(self, video_id: str) -> Optional[IngestJob]:
         with self._lock:
             return self.jobs.get(video_id)
 
     def list_jobs(self) -> List[dict]:
         with self._lock:
+            self._evict_expired()
             return [j.to_dict() for j in self.jobs.values()]
 
     def list_active_jobs(self) -> List[dict]:
@@ -153,6 +180,8 @@ class JobManager:
 
     def start_job(self, video_id: str, language: str) -> IngestJob:
         with self._lock:
+            self._evict_expired()
+
             existing = self.jobs.get(video_id)
             if existing and existing.status == "running":
                 return existing

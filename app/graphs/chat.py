@@ -69,16 +69,26 @@ def n_compress(s: S):
         step(w, "compress", "Contextual compression", "done", "nothing retrieved"); return {"docs": []}
     locate = s["intent"] == "locate"
     use_llm = cfg.llm_compression and not locate
-    top = EmbeddingsFilter(embeddings=V.get_embeddings(), k=(8 if locate else 4 if use_llm else 6)) \
-        .compress_documents(docs, s["standalone"])
+    
+    # 1. Embedding relevance filter with fallback to raw retrieved docs
+    try:
+        top = EmbeddingsFilter(embeddings=V.get_embeddings(), k=(8 if locate else 4 if use_llm else 6)) \
+            .compress_documents(docs, s["standalone"])
+        if not top:
+            top = docs[: (8 if locate else 4)]
+    except Exception:
+        top = docs[: (8 if locate else 4)]
+
     out = top
+    # 2. LLM extraction filter with safe fallback
     if use_llm and top:
         try:
             ext = LLMChainExtractor.from_llm(get_llm(0)).compress_documents(top, s["standalone"])
             out = ext or top
         except Exception:
             out = top
-    out = sorted(out, key=lambda d: (d.metadata["video_id"], d.metadata["start_sec"]))
+            
+    out = sorted(out, key=lambda d: (d.metadata.get("video_id", ""), d.metadata.get("start_sec", 0)))
     step(w, "compress", "Contextual compression", "done", f"{len(docs)} → {len(out)} passages")
     return {"docs": [{"text": d.page_content, "meta": d.metadata} for d in out]}
 

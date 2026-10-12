@@ -13,12 +13,28 @@ logger = logging.getLogger(__name__)
 
 _URL_ID = re.compile(r"(?:v=|youtu\.be/|shorts/|embed/|live/)([\w-]{11})")
 
-# In-memory cache to make repeated searches & info lookups instantaneous
+# In-memory cache with active TTL eviction — capped to avoid RAM growth
 _SEARCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _VINFO_CACHE: dict[str, tuple[float, dict]] = {}
-_CACHE_TTL = 3600  # 1 hour
+_CACHE_TTL = 3600   # 1 hour
+_SEARCH_CACHE_MAX = 30   # max distinct search queries kept
+_VINFO_CACHE_MAX = 50    # max distinct video metadata entries kept
 
 _TEMP_COOKIE_FILE: str | None = None
+
+
+def _evict_cache(cache: dict, max_size: int):
+    """Remove expired entries; if still too big, remove the oldest ones."""
+    now = time.time()
+    expired = [k for k, (ts, _) in cache.items() if now - ts > _CACHE_TTL]
+    for k in expired:
+        del cache[k]
+    # If still over max, evict oldest by timestamp
+    if len(cache) > max_size:
+        oldest = sorted(cache.items(), key=lambda x: x[1][0])
+        for k, _ in oldest[:len(cache) - max_size]:
+            del cache[k]
+
 
 _TRANSCRIPTAPI_BASE = "https://transcriptapi.com/api/v2/youtube/transcript"
 _TRANSCRIPTAPI_TIMEOUT = 30  # seconds
@@ -177,11 +193,13 @@ def _ydl(**o):
 
 
 def search(query: str, n: int = 12, offset: int = 0) -> list[dict]:
-    """Search YouTube with in-memory caching and offset support for lazy-loading."""
+    """Search YouTube with bounded, actively-evicted in-memory caching."""
     q_norm = query.strip().lower()
     total_needed = offset + n
     cache_key = f"{q_norm}:{max(total_needed, 24)}"
     now = time.time()
+
+    _evict_cache(_SEARCH_CACHE, _SEARCH_CACHE_MAX)
 
     entries = None
     if cache_key in _SEARCH_CACHE:
@@ -282,31 +300,15 @@ def _fetch_oembed_info(vid: str) -> dict:
 
 
 def video_info(vid: str) -> dict:
+    """Fetch video metadata using lightweight oEmbed API + page scraping."""
     now = time.time()
+    _evict_cache(_VINFO_CACHE, _VINFO_CACHE_MAX)
     if vid in _VINFO_CACHE:
         ts, cached = _VINFO_CACHE[vid]
         if now - ts < _CACHE_TTL:
             return cached
 
-    # Try yt-dlp first
-    try:
-        with _ydl() as y:
-            e = y.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-        info = {
-            "video_id": vid,
-            "title": e.get("title") or "YouTube Video",
-            "channel": e.get("channel") or e.get("uploader") or "YouTube Creator",
-            "duration": e.get("duration") or 0,
-            "thumbnail": e.get("thumbnail") or _thumb(vid),
-            "views": e.get("view_count"),
-            "url": f"https://www.youtube.com/watch?v={vid}",
-            "chapters": [{"start_time": c["start_time"], "title": c.get("title") or ""}
-                         for c in (e.get("chapters") or []) if c.get("start_time") is not None]
-        }
-    except Exception as ex:
-        logger.warning(f"yt-dlp extract_info failed for {vid} ({ex}). Falling back to oEmbed/scrape...")
-        info = _fetch_oembed_info(vid)
-
+    info = _fetch_oembed_info(vid)
     _VINFO_CACHE[vid] = (now, info)
     return info
 

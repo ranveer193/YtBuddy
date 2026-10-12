@@ -125,10 +125,16 @@ export default function ChatModal({
     const stepsAccumulator: { id: string; label: string; detail?: string }[] = []
 
     try {
+      // Determine effective scope: user selection -> current video -> all library videos
+      let targetVids = Array.from(scope)
+      if (targetVids.length === 0 && cur) {
+        targetVids = [cur.video_id]
+      }
+
       const payload = {
         session_id: sessionId,
         question: q,
-        video_ids: Array.from(scope),
+        video_ids: targetVids,
         t_from: parseTs(timeFrom),
         t_to: parseTs(timeTo)
       }
@@ -279,16 +285,19 @@ export default function ChatModal({
           {/* Search scope selector */}
           <div className="chat-scope">
             <span>Scope:</span>
-            {lib.map(v => (
-              <button
-                key={v.video_id}
-                className={`scope-chip ${scope.has(v.video_id) ? 'on' : ''}`}
-                onClick={() => toggleScope(v.video_id)}
-                title={v.title}
-              >
-                {v.title}
-              </button>
-            ))}
+            {lib.map(v => {
+              const isSelected = scope.size === 0 ? (cur?.video_id === v.video_id) : scope.has(v.video_id)
+              return (
+                <button
+                  key={v.video_id}
+                  className={`scope-chip ${isSelected ? 'on' : ''}`}
+                  onClick={() => toggleScope(v.video_id)}
+                  title={v.title}
+                >
+                  {v.title}
+                </button>
+              )
+            })}
             <div className="time-filter">
               <span>Time:</span>
               <input
